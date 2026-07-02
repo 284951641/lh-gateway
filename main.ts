@@ -38,50 +38,6 @@ const statusFromRpcError = (message = "") => {
   return 500;
 };
 
-const formatApiPrice = (model: any) => {
-  const strategy = model?.config?.pricing_strategy;
-
-  if (strategy?.type === "per_second") {
-    const rates = strategy.rates && typeof strategy.rates === "object"
-      ? Object.values(strategy.rates).map(Number).filter(Number.isFinite)
-      : [];
-
-    const rate = rates.length
-      ? Math.min(...rates) === Math.max(...rates)
-        ? `${Math.min(...rates)}`
-        : `${Math.min(...rates)}-${Math.max(...rates)}`
-      : `${Number(strategy.rate_per_second || strategy.rate || model.cost || 0)}`;
-
-    return `${rate} 算力/秒`;
-  }
-
-  if (strategy?.type === "matrix" && strategy.matrix) {
-    const costs = Object.values(strategy.matrix)
-      .flatMap((durations: any) => Object.values(durations || {}).map(Number))
-      .filter(Number.isFinite)
-      .sort((a, b) => a - b);
-
-    if (costs.length > 0) {
-      const min = costs[0];
-      const max = costs[costs.length - 1];
-      return min === max ? `${min} 算力/次` : `${min}-${max} 算力/次`;
-    }
-  }
-
-  return `${model.cost || 0} 算力/次`;
-};
-
-async function assertValidApiKey(supabaseAdmin: any, apiKey: string) {
-  const { data, error } = await supabaseAdmin.rpc("api_authenticate_key", {
-    p_api_key: apiKey,
-  });
-
-  if (error) throw new Error(error.message);
-  if (!data || (Array.isArray(data) && data.length === 0)) {
-    throw new Error("Invalid API key");
-  }
-}
-
 async function handleVideoApi(req: Request, url: URL) {
   const apiKey = readBearerToken(req);
   if (!apiKey) return jsonResponse({ error: "Missing API key" }, 401);
@@ -90,33 +46,6 @@ async function handleVideoApi(req: Request, url: URL) {
   const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-
-  if (req.method === "GET" && url.pathname === "/v1/video/models") {
-    try {
-      await assertValidApiKey(supabaseAdmin, apiKey);
-    } catch (error: any) {
-      return jsonResponse({ error: error.message }, statusFromRpcError(error.message));
-    }
-
-    const { data, error } = await supabaseAdmin
-      .from("model_costs")
-      .select("model_id, name, cost, config")
-      .eq("category", "video")
-      .eq("is_active", true);
-
-    if (error) return jsonResponse({ error: error.message }, 500);
-
-    const models = (data || [])
-      .filter((item: any) => item.config?.api_access?.enabled === true)
-      .map((item: any) => ({
-        model: item.model_id,
-        name: item.config?.api_access?.display_name || item.name || item.model_id,
-        price: formatApiPrice(item),
-        capabilities: item.config?.capabilities || {},
-      }));
-
-    return jsonResponse({ data: models }, 200);
-  }
 
   if (req.method === "POST" && url.pathname === "/v1/video/generations") {
     const body = await req.json().catch(() => null);
@@ -308,7 +237,7 @@ Deno.serve(async (req) => {
 
   try {
     const url = new URL(req.url);
-    if (url.pathname === "/v1/video/models" || url.pathname === "/v1/video/generations" || url.pathname.startsWith("/v1/video/generations/")) {
+    if (url.pathname === "/v1/video/generations" || url.pathname.startsWith("/v1/video/generations/")) {
       return await handleVideoApi(req, url);
     }
 
