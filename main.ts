@@ -55,6 +55,78 @@ const statusFromRpcError = (message = "") => {
   return 500;
 };
 
+const toArray = (value: unknown) => Array.isArray(value) ? value : [];
+
+const normalizeDuration = (value: unknown) => {
+  if (typeof value === "number" && Number.isFinite(value)) return `${value}s`;
+  const text = String(value ?? "").trim();
+  if (!text) return undefined;
+  return /\d\s*s$/i.test(text) ? text.toLowerCase() : `${text.replace(/s$/i, "")}s`;
+};
+
+const normalizeResolution = (value: unknown) => {
+  const text = String(value ?? "").trim();
+  return text ? text.toLowerCase() : undefined;
+};
+
+const appendUrlAssets = (
+  assets: Array<Record<string, unknown>>,
+  urls: unknown,
+  type: "image" | "video" | "audio",
+  role: string,
+) => {
+  for (const item of toArray(urls)) {
+    const url = typeof item === "string" ? item : (item as any)?.url;
+    if (typeof url === "string" && url.trim()) assets.push({ type, url: url.trim(), role });
+  }
+};
+
+const normalizeVideoRequest = (body: any) => {
+  const assets = toArray(body.assets).filter((item) => item && typeof item === "object") as Array<Record<string, unknown>>;
+  const hasFirstImage = typeof body.first_image === "string" && body.first_image.trim();
+  const hasLastImage = typeof body.last_image === "string" && body.last_image.trim();
+
+  if (hasFirstImage) {
+    assets.push({
+      type: "image",
+      url: body.first_image.trim(),
+      role: hasLastImage ? "first_frame" : "reference",
+    });
+  }
+
+  if (hasLastImage) {
+    assets.push({ type: "image", url: body.last_image.trim(), role: "last_frame" });
+  }
+
+  appendUrlAssets(assets, body.reference_image_urls ?? body.imageUrls ?? body.images, "image", "reference");
+  appendUrlAssets(assets, body.reference_video_urls ?? body.videoUrls ?? body.videos, "video", "reference");
+  appendUrlAssets(assets, body.reference_audio_urls ?? body.audioUrls ?? body.audios, "audio", "audio");
+
+  const modeType = body.modeType
+    || body.mode_type
+    || (hasFirstImage && hasLastImage ? "frames2video" : assets.length > 0 ? "image2video" : "text2video");
+
+  const referenceMode = body.referenceMode
+    || body.reference_mode
+    || (modeType === "frames2video" ? "first_last_frame" : "multimodal");
+
+  const params = {
+    aspectRatio: body.aspectRatio ?? body.aspect_ratio,
+    ratio: body.ratio ?? body.aspect_ratio,
+    resolution: normalizeResolution(body.resolution),
+    duration: normalizeDuration(body.duration),
+    referenceMode,
+    modeType,
+    has_video: body.has_video,
+    generateAudio: body.generateAudio ?? body.generate_audio,
+    humanMode: body.humanMode ?? body.human_mode,
+    watermark: body.watermark,
+    webhookUrl: body.webhookUrl ?? body.webhook_url,
+  };
+
+  return { assets, params };
+};
+
 async function handleVideoApi(req: Request, url: URL) {
   const apiKey = readBearerToken(req);
   if (!apiKey) return jsonResponse({ error: "Missing API key" }, 401);
@@ -64,28 +136,19 @@ async function handleVideoApi(req: Request, url: URL) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  if (req.method === "POST" && url.pathname === "/v1/video/generations") {
+  if (req.method === "POST" && (url.pathname === "/v1/video/generations" || url.pathname === "/v1/videos")) {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") {
       return jsonResponse({ error: "Invalid JSON body" }, 400);
     }
 
-    const params = {
-      aspectRatio: body.aspectRatio,
-      ratio: body.ratio,
-      resolution: body.resolution,
-      duration: body.duration,
-      referenceMode: body.referenceMode,
-      modeType: body.modeType,
-      has_video: body.has_video,
-      webhookUrl: body.webhookUrl,
-    };
+    const { assets, params } = normalizeVideoRequest(body);
 
     const { data, error } = await supabaseAdmin.rpc("api_create_video_task", {
       p_api_key: apiKey,
       p_model_id: String(body.model || ""),
       p_prompt: String(body.prompt || ""),
-      p_assets: Array.isArray(body.assets) ? body.assets : [],
+      p_assets: assets,
       p_params: params,
     });
 
@@ -94,7 +157,8 @@ async function handleVideoApi(req: Request, url: URL) {
   }
 
   if (req.method === "GET") {
-    const match = url.pathname.match(/^\/v1\/video\/generations\/([0-9a-f-]{36})$/i);
+    const match = url.pathname.match(/^\/v1\/video\/generations\/([0-9a-f-]{36})$/i)
+      || url.pathname.match(/^\/v1\/videos\/([0-9a-f-]{36})$/i);
     if (!match) return jsonResponse({ error: "Not found" }, 404);
 
     const taskId = match[1];
@@ -267,7 +331,12 @@ Deno.serve(async (req) => {
 
   try {
     const url = new URL(req.url);
-    if (url.pathname === "/v1/video/generations" || url.pathname.startsWith("/v1/video/generations/")) {
+    if (
+      url.pathname === "/v1/video/generations"
+      || url.pathname.startsWith("/v1/video/generations/")
+      || url.pathname === "/v1/videos"
+      || url.pathname.startsWith("/v1/videos/")
+    ) {
       return await handleVideoApi(req, url);
     }
 
