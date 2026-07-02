@@ -2,6 +2,23 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const secretsCache = new Map<string, { base_url: string; api_key: string }>();
+const videoStatusCache = new Map<string, { expiresAt: number; payload: unknown }>();
+const VIDEO_STATUS_CACHE_TTL_MS = 10_000;
+const VIDEO_STATUS_CACHE_MAX = 1000;
+
+const getVideoStatusCacheKey = (apiKey: string, taskId: string) => `${apiKey}:${taskId}`;
+
+const setVideoStatusCache = (key: string, payload: unknown) => {
+  if (videoStatusCache.size >= VIDEO_STATUS_CACHE_MAX) {
+    const firstKey = videoStatusCache.keys().next().value;
+    if (firstKey) videoStatusCache.delete(firstKey);
+  }
+
+  videoStatusCache.set(key, {
+    expiresAt: Date.now() + VIDEO_STATUS_CACHE_TTL_MS,
+    payload,
+  });
+};
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -32,9 +49,9 @@ const readBearerToken = (req: Request) => {
 };
 
 const statusFromRpcError = (message = "") => {
-  if (/invalid api key|unauthorized|权限|key/i.test(message)) return 401;
-  if (/余额不足/i.test(message)) return 402;
-  if (/不存在|停用|不能为空|仅支持|参数|prompt|model/i.test(message)) return 400;
+  if (/invalid api key|unauthorized|鏉冮檺|key/i.test(message)) return 401;
+  if (/浣欓涓嶈冻/i.test(message)) return 402;
+  if (/涓嶅瓨鍦▅鍋滅敤|涓嶈兘涓虹┖|浠呮敮鎸亅鍙傛暟|prompt|model/i.test(message)) return 400;
   return 500;
 };
 
@@ -80,12 +97,25 @@ async function handleVideoApi(req: Request, url: URL) {
     const match = url.pathname.match(/^\/v1\/video\/generations\/([0-9a-f-]{36})$/i);
     if (!match) return jsonResponse({ error: "Not found" }, 404);
 
+    const taskId = match[1];
+    const cacheKey = getVideoStatusCacheKey(apiKey, taskId);
+    const cached = videoStatusCache.get(cacheKey);
+    const now = Date.now();
+
+    if (cached && cached.expiresAt > now) {
+      return jsonResponse(cached.payload, 200);
+    }
+
+    if (cached) videoStatusCache.delete(cacheKey);
+
     const { data, error } = await supabaseAdmin.rpc("api_get_video_task", {
       p_api_key: apiKey,
-      p_task_id: match[1],
+      p_task_id: taskId,
     });
 
     if (error) return jsonResponse({ error: error.message }, statusFromRpcError(error.message));
+
+    setVideoStatusCache(cacheKey, data);
     return jsonResponse(data, 200);
   }
 
@@ -246,3 +276,4 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: error.message }, 500);
   }
 });
+
