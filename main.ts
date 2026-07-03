@@ -207,6 +207,14 @@ const appendContentAssets = (assets: Array<Record<string, unknown>>, content: un
   }
 };
 
+const hasInvalidAssetUrl = (assets: Array<Record<string, unknown>>) =>
+  assets.some((asset) => {
+    const url = typeof asset.url === "string" ? asset.url.trim() : "";
+    if (!/^https?:\/\//i.test(url)) return true;
+    asset.url = url;
+    return false;
+  });
+
 const normalizeVideoRequest = (body: any) => {
   const assets = toArray(body.assets).filter((item) => item && typeof item === "object") as Array<Record<string, unknown>>;
   const firstImage = body.first_image ?? body.first_frame_image;
@@ -280,6 +288,9 @@ async function handleVideoApi(req: Request, url: URL) {
     }
 
     const { assets, params } = normalizeVideoRequest(body);
+    if (hasInvalidAssetUrl(assets)) {
+      return jsonResponse({ error: "素材必须是 http/https 公网 URL，请勿直接传 base64、blob 或文件内容。" }, 400);
+    }
 
     const { data, error } = await supabaseAdmin.rpc("api_create_video_task", {
       p_api_key: apiKey,
