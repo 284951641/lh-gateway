@@ -42,6 +42,101 @@ const supabaseConfig = () => {
   return { supabaseUrl, supabaseAnonKey, supabaseServiceKey };
 };
 
+
+type ApiVideoModel = {
+  model_id: string;
+  name?: string;
+  cost?: number;
+  config?: any;
+  sort_order?: number;
+};
+
+const getApiAccessConfig = (model: ApiVideoModel) => model.config?.api_access || {};
+
+const isPublicApiVideoModel = (model: ApiVideoModel) => getApiAccessConfig(model).enabled === true;
+
+const getPublicApiModelName = (model: ApiVideoModel) =>
+  String(getApiAccessConfig(model).display_name || model.name || model.model_id);
+
+const getPublicApiModelDescription = (model: ApiVideoModel) =>
+  String(getApiAccessConfig(model).description || "");
+
+const formatVideoModelPriceLabel = (model: ApiVideoModel) => {
+  const strategy = model.config?.pricing_strategy;
+  const fallbackCost = Number(model.cost || 0) || 0;
+
+  if (strategy?.type === "per_second") {
+    const rates = strategy.rates && typeof strategy.rates === "object"
+      ? Object.values(strategy.rates).map(Number).filter(Number.isFinite)
+      : [];
+    const rate = rates.length
+      ? Math.min(...rates) === Math.max(...rates)
+        ? `${Math.min(...rates)}`
+        : `${Math.min(...rates)}-${Math.max(...rates)}`
+      : String(Number(strategy.rate_per_second || strategy.rate || fallbackCost) || fallbackCost);
+    return `${rate} 算力/秒`;
+  }
+
+  if (strategy?.type === "matrix" && strategy.matrix) {
+    const costs = Object.values(strategy.matrix)
+      .flatMap((durations: any) => Object.values(durations || {}).map(Number))
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    if (costs.length > 0) {
+      const min = costs[0];
+      const max = costs[costs.length - 1];
+      return min === max ? `${min} 算力/次` : `${min}-${max} 算力/次`;
+    }
+  }
+
+  return `${fallbackCost} 算力/次`;
+};
+
+const fetchPublicApiVideoModels = async (supabaseAdmin: any) => {
+  const { data, error } = await supabaseAdmin
+    .from("model_costs")
+    .select("model_id,name,cost,config,sort_order")
+    .eq("category", "video")
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true });
+
+  if (error) throw error;
+  return ((data || []) as ApiVideoModel[]).filter(isPublicApiVideoModel);
+};
+
+async function resolvePublicApiModelId(supabaseAdmin: any, requestedModel: string) {
+  const modelName = String(requestedModel || "").trim();
+  if (!modelName) return "";
+
+  const models = await fetchPublicApiVideoModels(supabaseAdmin);
+  const matched = models.find((model) =>
+    model.model_id === modelName || getPublicApiModelName(model) === modelName
+  );
+  return matched?.model_id || "";
+}
+
+async function handleModelsApi(req: Request) {
+  if (req.method !== "GET") return jsonResponse({ error: "Method not allowed" }, 405);
+
+  const { supabaseUrl, supabaseServiceKey } = supabaseConfig();
+  const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  const models = await fetchPublicApiVideoModels(supabaseAdmin);
+  return jsonResponse({
+    object: "list",
+    data: models.map((model) => ({
+      id: getPublicApiModelName(model),
+      object: "model",
+      created: 0,
+      owned_by: "linghui",
+      type: "video",
+      description: getPublicApiModelDescription(model),
+      price: formatVideoModelPriceLabel(model),
+    })),
+  });
+}
 const readBearerToken = (req: Request) => {
   const header = req.headers.get("Authorization") || "";
   const match = header.match(/^Bearer\s+(.+)$/i);
@@ -146,7 +241,7 @@ async function handleVideoApi(req: Request, url: URL) {
 
     const { data, error } = await supabaseAdmin.rpc("api_create_video_task", {
       p_api_key: apiKey,
-      p_model_id: String(body.model || ""),
+      p_model_id: await resolvePublicApiModelId(supabaseAdmin, String(body.model || "")),
       p_prompt: String(body.prompt || ""),
       p_assets: assets,
       p_params: params,
@@ -331,6 +426,9 @@ Deno.serve(async (req) => {
 
   try {
     const url = new URL(req.url);
+    if (url.pathname === "/v1/models") {
+      return await handleModelsApi(req);
+    }
     if (
       url.pathname === "/v1/video/generations"
       || url.pathname.startsWith("/v1/video/generations/")
@@ -345,4 +443,3 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: error.message }, 500);
   }
 });
-
