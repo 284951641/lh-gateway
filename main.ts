@@ -164,38 +164,80 @@ const normalizeResolution = (value: unknown) => {
   return text ? text.toLowerCase() : undefined;
 };
 
+const toUrlItems = (value: unknown) => {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null || value === "") return [];
+  return [value];
+};
+
+const pickNestedUrl = (item: any, key: "image_url" | "video_url" | "audio_url") => {
+  const value = item?.[key];
+  if (typeof value === "string") return value;
+  return typeof value?.url === "string" ? value.url : "";
+};
+
 const appendUrlAssets = (
   assets: Array<Record<string, unknown>>,
   urls: unknown,
   type: "image" | "video" | "audio",
   role: string,
 ) => {
-  for (const item of toArray(urls)) {
+  for (const item of toUrlItems(urls)) {
     const url = typeof item === "string" ? item : (item as any)?.url;
     if (typeof url === "string" && url.trim()) assets.push({ type, url: url.trim(), role });
   }
 };
 
+const appendContentAssets = (assets: Array<Record<string, unknown>>, content: unknown) => {
+  for (const item of toArray(content)) {
+    if (!item || typeof item !== "object") continue;
+    const type = (item as any).type;
+    if (type === "image_url") {
+      const url = pickNestedUrl(item, "image_url");
+      const itemRole = String((item as any).role || "");
+      const role = itemRole.includes("last") ? "last_frame" : itemRole.includes("first") ? "first_frame" : "reference";
+      if (url.trim()) assets.push({ type: "image", url: url.trim(), role });
+    } else if (type === "video_url") {
+      const url = pickNestedUrl(item, "video_url");
+      if (url.trim()) assets.push({ type: "video", url: url.trim(), role: "reference" });
+    } else if (type === "audio_url") {
+      const url = pickNestedUrl(item, "audio_url");
+      if (url.trim()) assets.push({ type: "audio", url: url.trim(), role: "audio" });
+    }
+  }
+};
+
 const normalizeVideoRequest = (body: any) => {
   const assets = toArray(body.assets).filter((item) => item && typeof item === "object") as Array<Record<string, unknown>>;
-  const hasFirstImage = typeof body.first_image === "string" && body.first_image.trim();
-  const hasLastImage = typeof body.last_image === "string" && body.last_image.trim();
+  const firstImage = body.first_image ?? body.first_frame_image;
+  const lastImage = body.last_image ?? body.last_frame_image;
+  const hasFirstImage = typeof firstImage === "string" && firstImage.trim();
+  const hasLastImage = typeof lastImage === "string" && lastImage.trim();
 
   if (hasFirstImage) {
     assets.push({
       type: "image",
-      url: body.first_image.trim(),
+      url: firstImage.trim(),
       role: hasLastImage ? "first_frame" : "reference",
     });
   }
 
   if (hasLastImage) {
-    assets.push({ type: "image", url: body.last_image.trim(), role: "last_frame" });
+    assets.push({ type: "image", url: lastImage.trim(), role: "last_frame" });
   }
 
-  appendUrlAssets(assets, body.reference_image_urls ?? body.imageUrls ?? body.images, "image", "reference");
-  appendUrlAssets(assets, body.reference_video_urls ?? body.videoUrls ?? body.videos, "video", "reference");
-  appendUrlAssets(assets, body.reference_audio_urls ?? body.audioUrls ?? body.audios, "audio", "audio");
+  appendUrlAssets(assets, body.reference_image_urls ?? body.reference_images, "image", "reference");
+  appendUrlAssets(assets, body.imageUrls ?? body.images, "image", "reference");
+  appendUrlAssets(assets, body.image_url, "image", "reference");
+  appendUrlAssets(assets, body.reference_video_urls ?? body.reference_videos, "video", "reference");
+  appendUrlAssets(assets, body.videoUrls ?? body.videos, "video", "reference");
+  appendUrlAssets(assets, body.source_video, "video", "reference");
+  appendUrlAssets(assets, body.reference_video, "video", "reference");
+  appendUrlAssets(assets, body.reference_audio_urls ?? body.reference_audios, "audio", "audio");
+  appendUrlAssets(assets, body.audioUrls ?? body.audios, "audio", "audio");
+  appendUrlAssets(assets, body.audio_url, "audio", "audio");
+  appendUrlAssets(assets, body.reference_audio, "audio", "audio");
+  appendContentAssets(assets, body.content);
 
   const modeType = body.modeType
     || body.mode_type
