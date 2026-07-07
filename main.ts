@@ -143,6 +143,83 @@ const readBearerToken = (req: Request) => {
   return match?.[1]?.trim() || "";
 };
 
+
+const UPLOAD_MAX_BYTES = Number(Deno.env.get("UPLOAD_MAX_BYTES") || 50 * 1024 * 1024);
+const UPLOAD_WORKER_URL = Deno.env.get("UPLOAD_WORKER_URL") || "https://sedance.top";
+const UPLOAD_PUBLIC_URL = Deno.env.get("UPLOAD_PUBLIC_URL") || "https://assets.sedance.top";
+
+const uploadExtByType: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+  "audio/mpeg": "mp3",
+};
+
+const base64Url = (input: string | Uint8Array) => {
+  const text = typeof input === "string" ? input : String.fromCharCode(...input);
+  return btoa(text).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+};
+
+const signUploadPayload = async (payload: string) => {
+  const secret = Deno.env.get("UPLOAD_SIGNING_SECRET") || "";
+  if (!secret) throw new Error("Missing UPLOAD_SIGNING_SECRET");
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return base64Url(new Uint8Array(sig));
+};
+
+async function handleUploadSignApi(req: Request) {
+  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+
+  const apiKey = readBearerToken(req);
+  if (!apiKey) return jsonResponse({ error: "Missing API key" }, 401);
+
+  const body = await req.json().catch(() => null);
+  const contentType = String(body?.contentType || "").split(";")[0].toLowerCase();
+  const size = Number(body?.size || 0);
+  const ext = uploadExtByType[contentType];
+
+  if (!ext) return jsonResponse({ error: "Unsupported file type" }, 415);
+  if (!size || size > UPLOAD_MAX_BYTES) return jsonResponse({ error: "File too large" }, 413);
+
+  const { supabaseUrl, supabaseServiceKey } = supabaseConfig();
+  const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  const { data, error } = await supabaseAdmin.rpc("api_validate_upload_key", {
+    p_api_key: apiKey,
+  });
+  const userId = typeof data === "string" ? data : Array.isArray(data) ? data[0]?.user_id : data?.user_id;
+  if (error || !userId) return jsonResponse({ error: "Invalid API key" }, 401);
+
+  const key = `api-uploads/${userId}/${Date.now()}-${crypto.randomUUID()}.${ext}`;
+  const payload = base64Url(JSON.stringify({
+    key,
+    contentType,
+    maxSize: size,
+    exp: Date.now() + 5 * 60 * 1000,
+  }));
+  const token = `${payload}.${await signUploadPayload(payload)}`;
+
+  return jsonResponse({
+    uploadUrl: `${UPLOAD_WORKER_URL}/upload?token=${token}`,
+    publicUrl: `${UPLOAD_PUBLIC_URL}/${key}`,
+    expiresIn: 300,
+  });
+}
 const statusFromRpcError = (message = "") => {
   if (/invalid api key|unauthorized|鏉冮檺|key/i.test(message)) return 401;
   if (/浣欓涓嶈冻/i.test(message)) return 402;
@@ -481,6 +558,9 @@ Deno.serve(async (req) => {
     const url = new URL(req.url);
     if (url.pathname === "/v1/models") {
       return await handleModelsApi(req);
+    }
+    if (url.pathname === "/v1/uploads/sign") {
+      return await handleUploadSignApi(req);
     }
     if (
       url.pathname === "/v1/video/generations"
