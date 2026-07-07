@@ -257,7 +257,7 @@ const normalizeVideoRequest = (body: any) => {
 
   const params = {
     aspectRatio: body.aspectRatio ?? body.aspect_ratio,
-    ratio: body.ratio ?? body.aspect_ratio,
+    ratio: body.ratio ?? body.aspectRatio ?? body.aspect_ratio,
     resolution: normalizeResolution(body.resolution),
     duration: normalizeDuration(body.duration),
     referenceMode,
