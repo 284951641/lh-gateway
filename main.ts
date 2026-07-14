@@ -223,9 +223,9 @@ async function handleUploadSignApi(req: Request) {
   });
 }
 const statusFromRpcError = (message = "") => {
-  if (/invalid api key|unauthorized|鏉冮檺|key/i.test(message)) return 401;
-  if (/浣欓涓嶈冻/i.test(message)) return 402;
-  if (/涓嶅瓨鍦▅鍋滅敤|涓嶈兘涓虹┖|浠呮敮鎸亅鍙傛暟|prompt|model/i.test(message)) return 400;
+  if (/invalid api key|unauthorized|权限|key/i.test(message)) return 401;
+  if (/余额不足/i.test(message)) return 402;
+  if (/不存在|停用|不能为空|仅支持|参数|prompt|model/i.test(message)) return 400;
   return 500;
 };
 
