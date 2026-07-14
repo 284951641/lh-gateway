@@ -144,7 +144,7 @@ const readBearerToken = (req: Request) => {
 };
 
 
-const UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
+const UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const UPLOAD_WORKER_URL = Deno.env.get("UPLOAD_WORKER_URL") || "https://sedance.top";
 const UPLOAD_PUBLIC_URL = Deno.env.get("UPLOAD_PUBLIC_URL") || "https://assets.sedance.top";
 
@@ -193,7 +193,7 @@ async function handleUploadSignApi(req: Request) {
 
   if (!ext) return jsonResponse({ error: "Unsupported file type" }, 415);
   if (!size || size > UPLOAD_MAX_BYTES) {
-  return jsonResponse({ error: "单个文件最大支持 15MB" }, 413);
+  return jsonResponse({ error: "单个文件最大支持 20MB" }, 413);
 }
 
   const { supabaseUrl, supabaseServiceKey } = supabaseConfig();
