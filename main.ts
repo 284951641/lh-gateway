@@ -371,13 +371,56 @@ async function handleVideoApi(req: Request, url: URL) {
       return jsonResponse({ error: "素材必须是 http/https 公网 URL，请勿直接传 base64、blob 或文件内容。" }, 400);
     }
 
-    const { data, error } = await supabaseAdmin.rpc("api_create_video_task", {
-      p_api_key: apiKey,
-      p_model_id: await resolvePublicApiModelId(supabaseAdmin, String(body.model || "")),
-      p_prompt: String(body.prompt || ""),
-      p_assets: assets,
-      p_params: params,
-    });
+    // 获取模型
+const modelId = await resolvePublicApiModelId(
+  supabaseAdmin,
+  String(body.model || ""),
+);
+
+if (!modelId) {
+  return jsonResponse({ error: "模型不存在或未开放 API 调用" }, 400);
+}
+
+// 获取模型允许的参数
+const { data: modelData, error: modelError } = await supabaseAdmin
+  .from("model_costs")
+  .select("config")
+  .eq("model_id", modelId)
+  .single();
+
+if (modelError || !modelData) {
+  return jsonResponse({ error: "读取模型配置失败" }, 500);
+}
+
+const capabilities = modelData.config?.capabilities || {};
+
+// 检查用户参数是否在模型允许范围内
+const invalidParam = [
+  ["duration", params.duration, capabilities.durations],
+  ["resolution", params.resolution, capabilities.resolutions],
+  ["ratio", params.ratio, capabilities.ratios],
+].find(([, value, allowed]) =>
+  value &&
+  Array.isArray(allowed) &&
+  !allowed.includes(value)
+);
+
+if (invalidParam) {
+  const [name, value, allowed] = invalidParam;
+
+  return jsonResponse({
+    error: `参数 ${name}=${value} 不受支持，可选值：${allowed.join(", ")}`,
+  }, 400);
+}
+
+// 参数合规后，才扣费并创建任务
+const { data, error } = await supabaseAdmin.rpc("api_create_video_task", {
+  p_api_key: apiKey,
+  p_model_id: modelId,
+  p_prompt: String(body.prompt || ""),
+  p_assets: assets,
+  p_params: params,
+});
 
     if (error) return jsonResponse({ error: error.message }, statusFromRpcError(error.message));
     return jsonResponse(data, 200);
