@@ -294,37 +294,96 @@ const hasInvalidAssetUrl = (assets: Array<Record<string, unknown>>) =>
     return false;
   });
 
+const firstNonEmptyAssetSource = (...values: any[]) =>
+  values.find((value) => toUrlItems(value).some((item) => {
+    const url = typeof item === "string" ? item : item?.url;
+    return typeof url === "string" && url.trim();
+  }));
+
 const normalizeVideoRequest = (body: any) => {
   const assets = toArray(body.assets).filter((item) => item && typeof item === "object") as Array<Record<string, unknown>>;
-  const firstImage = body.first_image ?? body.first_frame_image;
-  const lastImage = body.last_image ?? body.last_frame_image;
-  const hasFirstImage = typeof firstImage === "string" && firstImage.trim();
-  const hasLastImage = typeof lastImage === "string" && lastImage.trim();
+  const hasOfficialAssets = assets.length > 0;
 
-  if (hasFirstImage) {
-    assets.push({
-      type: "image",
-      url: firstImage.trim(),
-      role: hasLastImage ? "first_frame" : "reference",
-    });
+  const firstImage = hasOfficialAssets
+    ? undefined
+    : firstNonEmptyAssetSource(body.first_image, body.first_frame_image);
+
+  const lastImage = hasOfficialAssets
+    ? undefined
+    : firstNonEmptyAssetSource(body.last_image, body.last_frame_image);
+
+  const hasFirstImage =
+    assets.some((asset) => asset.role === "first_frame") ||
+    (typeof firstImage === "string" && Boolean(firstImage.trim()));
+
+  const hasLastImage =
+    assets.some((asset) => asset.role === "last_frame") ||
+    (typeof lastImage === "string" && Boolean(lastImage.trim()));
+
+  if (!hasOfficialAssets) {
+    if (typeof firstImage === "string" && firstImage.trim()) {
+      assets.push({
+        type: "image",
+        url: firstImage.trim(),
+        role: hasLastImage ? "first_frame" : "reference",
+      });
+    }
+
+    if (typeof lastImage === "string" && lastImage.trim()) {
+      assets.push({
+        type: "image",
+        url: lastImage.trim(),
+        role: "last_frame",
+      });
+    }
+
+    if (!hasFirstImage && !hasLastImage) {
+      appendUrlAssets(
+        assets,
+        firstNonEmptyAssetSource(
+          body.reference_image_urls,
+          body.reference_images,
+          body.imageUrls,
+          body.images,
+          body.image_url,
+        ),
+        "image",
+        "reference",
+      );
+    }
+
+    appendUrlAssets(
+      assets,
+      firstNonEmptyAssetSource(
+        body.reference_video_urls,
+        body.reference_videos,
+        body.videoUrls,
+        body.videos,
+        body.source_video,
+        body.reference_video,
+      ),
+      "video",
+      "reference",
+    );
+
+    appendUrlAssets(
+      assets,
+      firstNonEmptyAssetSource(
+        body.reference_audio_urls,
+        body.reference_audios,
+        body.audioUrls,
+        body.audios,
+        body.audio_url,
+        body.reference_audio,
+      ),
+      "audio",
+      "audio",
+    );
+
+    if (assets.length === 0) {
+      appendContentAssets(assets, body.content);
+    }
   }
-
-  if (hasLastImage) {
-    assets.push({ type: "image", url: lastImage.trim(), role: "last_frame" });
-  }
-
-  appendUrlAssets(assets, body.reference_image_urls ?? body.reference_images, "image", "reference");
-  appendUrlAssets(assets, body.imageUrls ?? body.images, "image", "reference");
-  appendUrlAssets(assets, body.image_url, "image", "reference");
-  appendUrlAssets(assets, body.reference_video_urls ?? body.reference_videos, "video", "reference");
-  appendUrlAssets(assets, body.videoUrls ?? body.videos, "video", "reference");
-  appendUrlAssets(assets, body.source_video, "video", "reference");
-  appendUrlAssets(assets, body.reference_video, "video", "reference");
-  appendUrlAssets(assets, body.reference_audio_urls ?? body.reference_audios, "audio", "audio");
-  appendUrlAssets(assets, body.audioUrls ?? body.audios, "audio", "audio");
-  appendUrlAssets(assets, body.audio_url, "audio", "audio");
-  appendUrlAssets(assets, body.reference_audio, "audio", "audio");
-  appendContentAssets(assets, body.content);
 
   const modeType = body.modeType
     || body.mode_type
