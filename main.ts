@@ -2,23 +2,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const secretsCache = new Map<string, { base_url: string; api_key: string }>();
-const videoStatusCache = new Map<string, { expiresAt: number; payload: unknown }>();
-const VIDEO_STATUS_CACHE_TTL_MS = 10_000;
-const VIDEO_STATUS_CACHE_MAX = 1000;
-
-const getVideoStatusCacheKey = (apiKey: string, taskId: string) => `${apiKey}:${taskId}`;
-
-const setVideoStatusCache = (key: string, payload: unknown) => {
-  if (videoStatusCache.size >= VIDEO_STATUS_CACHE_MAX) {
-    const firstKey = videoStatusCache.keys().next().value;
-    if (firstKey) videoStatusCache.delete(firstKey);
-  }
-
-  videoStatusCache.set(key, {
-    expiresAt: Date.now() + VIDEO_STATUS_CACHE_TTL_MS,
-    payload,
-  });
-};
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -490,15 +473,6 @@ const { data, error } = await supabaseAdmin.rpc("api_create_video_task", {
     if (!match) return jsonResponse({ error: "Not found" }, 404);
 
     const taskId = match[1];
-    const cacheKey = getVideoStatusCacheKey(apiKey, taskId);
-    const cached = videoStatusCache.get(cacheKey);
-    const now = Date.now();
-
-    if (cached && cached.expiresAt > now) {
-      return jsonResponse(cached.payload, 200);
-    }
-
-    if (cached) videoStatusCache.delete(cacheKey);
 
     const { data, error } = await supabaseAdmin.rpc("api_get_video_task", {
       p_api_key: apiKey,
@@ -507,7 +481,6 @@ const { data, error } = await supabaseAdmin.rpc("api_create_video_task", {
 
     if (error) return jsonResponse({ error: error.message }, statusFromRpcError(error.message));
 
-    setVideoStatusCache(cacheKey, data);
     return jsonResponse(data, 200);
   }
 
