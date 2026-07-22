@@ -48,7 +48,6 @@ type ApiVideoModel = {
   name?: string;
   cost?: number;
   config?: any;
-  sort_order?: number;
 };
 
 const getApiAccessConfig = (model: ApiVideoModel) => model.config?.api_access || {};
@@ -561,13 +560,9 @@ async function handleProxyGateway(req: Request) {
     if (whiteList.includes(key.toLowerCase())) proxyHeaders.set(key, value);
   }
 
-  proxyHeaders.delete("content-length");
-  proxyHeaders.delete("accept-encoding");
-  proxyHeaders.delete("host");
   proxyHeaders.set("Authorization", `Bearer ${secret.api_key}`);
   proxyHeaders.set("x-goog-api-key", secret.api_key);
 
-  console.log(`[Gateway] Race Start: ${provider} -> ${finalUrl}`);
 
   const fetchOptions: RequestInit = {
     method: req.method,
@@ -597,7 +592,6 @@ async function handleProxyGateway(req: Request) {
     });
   }
 
-  console.log("[Gateway] Switching to Heartbeat Mode for long task.");
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
