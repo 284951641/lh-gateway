@@ -91,9 +91,7 @@ async function resolvePublicApiModelId(supabaseAdmin: any, requestedModel: strin
   if (!modelName) return "";
 
   const models = await fetchPublicApiVideoModels(supabaseAdmin);
-  const matched = models.find((model) =>
-    model.model_id === modelName || getPublicApiModelName(model) === modelName
-  );
+  const matched = models.find((model) => getPublicApiModelName(model) === modelName);
   return matched?.model_id || "";
 }
 
@@ -127,16 +125,14 @@ const readBearerToken = (req: Request) => {
 
 
 const UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+const UPLOAD_SIGN_FIELDS = new Set(["contentType", "size"]);
 const UPLOAD_WORKER_URL = Deno.env.get("UPLOAD_WORKER_URL") || "https://sedance.top";
 const UPLOAD_PUBLIC_URL = Deno.env.get("UPLOAD_PUBLIC_URL") || "https://assets.sedance.top";
 
 const uploadExtByType: Record<string, string> = {
   "image/jpeg": "jpg",
   "image/png": "png",
-  "image/webp": "webp",
-  "image/gif": "gif",
   "video/mp4": "mp4",
-  "video/webm": "webm",
   "video/quicktime": "mov",
   "audio/mpeg": "mp3",
 };
@@ -169,14 +165,25 @@ async function handleUploadSignApi(req: Request) {
   if (!apiKey) return jsonResponse({ error: "Missing API key" }, 401);
 
   const body = await req.json().catch(() => null);
-  const contentType = String(body?.contentType || "").split(";")[0].toLowerCase();
-  const size = Number(body?.size || 0);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  const unknownFields = Object.keys(body).filter((field) => !UPLOAD_SIGN_FIELDS.has(field));
+  if (unknownFields.length) {
+    return jsonResponse({ error: `Unsupported request fields: ${unknownFields.join(", ")}` }, 400);
+  }
+
+  const contentType = typeof body.contentType === "string"
+    ? body.contentType.split(";")[0].toLowerCase()
+    : "";
+  const size = body.size;
   const ext = uploadExtByType[contentType];
 
   if (!ext) return jsonResponse({ error: "Unsupported file type" }, 415);
-  if (!size || size > UPLOAD_MAX_BYTES) {
-  return jsonResponse({ error: "单个文件最大支持 20MB" }, 413);
-}
+  if (!Number.isSafeInteger(size) || size <= 0 || size > UPLOAD_MAX_BYTES) {
+    return jsonResponse({ error: "单个文件最大支持 20MB" }, 413);
+  }
 
   const { supabaseUrl, supabaseServiceKey } = supabaseConfig();
   const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
@@ -211,185 +218,194 @@ const statusFromRpcError = (message = "") => {
   return 500;
 };
 
-const toArray = (value: unknown) => Array.isArray(value) ? value : [];
+const VIDEO_REQUEST_FIELDS = new Set([
+  "model",
+  "prompt",
+  "aspectRatio",
+  "resolution",
+  "duration",
+  "modeType",
+  "referenceMode",
+  "assets",
+  "webhookUrl",
+]);
+const VIDEO_ASSET_FIELDS = new Set(["type", "url", "role"]);
+const VIDEO_MODE_TYPES = new Set(["text2video", "image2video", "frames2video"]);
+const VIDEO_REFERENCE_MODES = new Set(["multimodal", "first_last_frame"]);
+const VIDEO_ASSET_ROLES = {
+  image: new Set(["reference", "first_frame", "last_frame"]),
+  video: new Set(["reference"]),
+  audio: new Set(["audio"]),
+} as const;
 
-const normalizeDuration = (value: unknown) => {
-  if (typeof value === "number" && Number.isFinite(value)) return `${value}s`;
-  const text = String(value ?? "").trim();
-  if (!text) return undefined;
-  return /\d\s*s$/i.test(text) ? text.toLowerCase() : `${text.replace(/s$/i, "")}s`;
-};
-
-const normalizeResolution = (value: unknown) => {
-  const text = String(value ?? "").trim();
-  return text ? text.toLowerCase() : undefined;
-};
-
-const toUrlItems = (value: unknown) => {
-  if (Array.isArray(value)) return value;
-  if (value === undefined || value === null || value === "") return [];
-  return [value];
-};
-
-const pickNestedUrl = (item: any, key: "image_url" | "video_url" | "audio_url") => {
-  const value = item?.[key];
-  if (typeof value === "string") return value;
-  return typeof value?.url === "string" ? value.url : "";
-};
-
-const appendUrlAssets = (
-  assets: Array<Record<string, unknown>>,
-  urls: unknown,
-  type: "image" | "video" | "audio",
-  role: string,
-) => {
-  for (const item of toUrlItems(urls)) {
-    const url = typeof item === "string" ? item : (item as any)?.url;
-    if (typeof url === "string" && url.trim()) assets.push({ type, url: url.trim(), role });
-  }
-};
-
-const appendContentAssets = (assets: Array<Record<string, unknown>>, content: unknown) => {
-  for (const item of toArray(content)) {
-    if (!item || typeof item !== "object") continue;
-    const type = (item as any).type;
-    if (type === "image_url") {
-      const url = pickNestedUrl(item, "image_url");
-      const itemRole = String((item as any).role || "");
-      const role = itemRole.includes("last") ? "last_frame" : itemRole.includes("first") ? "first_frame" : "reference";
-      if (url.trim()) assets.push({ type: "image", url: url.trim(), role });
-    } else if (type === "video_url") {
-      const url = pickNestedUrl(item, "video_url");
-      if (url.trim()) assets.push({ type: "video", url: url.trim(), role: "reference" });
-    } else if (type === "audio_url") {
-      const url = pickNestedUrl(item, "audio_url");
-      if (url.trim()) assets.push({ type: "audio", url: url.trim(), role: "audio" });
-    }
-  }
-};
-
-const hasInvalidAssetUrl = (assets: Array<Record<string, unknown>>) =>
-  assets.some((asset) => {
-    const url = typeof asset.url === "string" ? asset.url.trim() : "";
-    if (!/^https?:\/\//i.test(url)) return true;
-    asset.url = url;
+const isHttpsUrl = (value: string) => {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
     return false;
-  });
+  }
+};
 
-const firstNonEmptyAssetSource = (...values: any[]) =>
-  values.find((value) => toUrlItems(value).some((item) => {
-    const url = typeof item === "string" ? item : item?.url;
-    return typeof url === "string" && url.trim();
-  }));
-
-const normalizeVideoRequest = (body: any) => {
-  const assets = toArray(body.assets).filter((item) => item && typeof item === "object") as Array<Record<string, unknown>>;
-  const hasOfficialAssets = assets.length > 0;
-
-  const firstImage = hasOfficialAssets
-    ? undefined
-    : firstNonEmptyAssetSource(body.first_image, body.first_frame_image);
-
-  const lastImage = hasOfficialAssets
-    ? undefined
-    : firstNonEmptyAssetSource(body.last_image, body.last_frame_image);
-
-  const hasFirstImage =
-    assets.some((asset) => asset.role === "first_frame") ||
-    (typeof firstImage === "string" && Boolean(firstImage.trim()));
-
-  const hasLastImage =
-    assets.some((asset) => asset.role === "last_frame") ||
-    (typeof lastImage === "string" && Boolean(lastImage.trim()));
-
-  if (!hasOfficialAssets) {
-    if (typeof firstImage === "string" && firstImage.trim()) {
-      assets.push({
-        type: "image",
-        url: firstImage.trim(),
-        role: hasLastImage ? "first_frame" : "reference",
-      });
-    }
-
-    if (typeof lastImage === "string" && lastImage.trim()) {
-      assets.push({
-        type: "image",
-        url: lastImage.trim(),
-        role: "last_frame",
-      });
-    }
-
-    if (!hasFirstImage && !hasLastImage) {
-      appendUrlAssets(
-        assets,
-        firstNonEmptyAssetSource(
-          body.reference_image_urls,
-          body.reference_images,
-          body.imageUrls,
-          body.images,
-          body.image_url,
-        ),
-        "image",
-        "reference",
-      );
-    }
-
-    appendUrlAssets(
-      assets,
-      firstNonEmptyAssetSource(
-        body.reference_video_urls,
-        body.reference_videos,
-        body.videoUrls,
-        body.videos,
-        body.source_video,
-        body.reference_video,
-      ),
-      "video",
-      "reference",
-    );
-
-    appendUrlAssets(
-      assets,
-      firstNonEmptyAssetSource(
-        body.reference_audio_urls,
-        body.reference_audios,
-        body.audioUrls,
-        body.audios,
-        body.audio_url,
-        body.reference_audio,
-      ),
-      "audio",
-      "audio",
-    );
-
-    if (assets.length === 0) {
-      appendContentAssets(assets, body.content);
-    }
+const parseVideoRequest = (body: unknown) => {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { error: "Invalid JSON body" };
   }
 
-  const modeType = body.modeType
-    || body.mode_type
-    || (hasFirstImage && hasLastImage ? "frames2video" : assets.length > 0 ? "image2video" : "text2video");
+  const request = body as Record<string, unknown>;
+  const unknownFields = Object.keys(request).filter((field) => !VIDEO_REQUEST_FIELDS.has(field));
+  if (unknownFields.length) {
+    return { error: `Unsupported request fields: ${unknownFields.join(", ")}` };
+  }
 
-  const referenceMode = body.referenceMode
-    || body.reference_mode
-    || (modeType === "frames2video" ? "first_last_frame" : "multimodal");
+  if (typeof request.model !== "string" || !request.model.trim()) {
+    return { error: "model must be a non-empty string" };
+  }
+  if (typeof request.prompt !== "string" || !request.prompt.trim()) {
+    return { error: "prompt must be a non-empty string" };
+  }
 
-  const params = {
-    aspectRatio: body.aspectRatio ?? body.aspect_ratio,
-    ratio: body.ratio ?? body.aspectRatio ?? body.aspect_ratio,
-    resolution: normalizeResolution(body.resolution),
-    duration: normalizeDuration(body.duration),
-    referenceMode,
-    modeType,
-    has_video: body.has_video,
-    generateAudio: body.generateAudio ?? body.generate_audio,
-    humanMode: body.humanMode ?? body.human_mode,
-    watermark: body.watermark,
-    webhookUrl: body.webhookUrl ?? body.webhook_url,
+  for (const field of ["aspectRatio", "resolution", "duration", "modeType", "referenceMode", "webhookUrl"] as const) {
+    const value = request[field];
+    if (value !== undefined && (typeof value !== "string" || !value.trim())) {
+      return { error: `${field} must be a non-empty string` };
+    }
+  }
+  if (typeof request.webhookUrl === "string" && !isHttpsUrl(request.webhookUrl.trim())) {
+    return { error: "webhookUrl must be a valid HTTPS URL" };
+  }
+
+  const rawAssets = request.assets ?? [];
+  if (!Array.isArray(rawAssets)) return { error: "assets must be an array" };
+
+  const assets: Array<{ type: "image" | "video" | "audio"; url: string; role: string }> = [];
+  for (let index = 0; index < rawAssets.length; index += 1) {
+    const asset = rawAssets[index];
+    if (!asset || typeof asset !== "object" || Array.isArray(asset)) {
+      return { error: `assets[${index}] must be an object` };
+    }
+
+    const item = asset as Record<string, unknown>;
+    const unknownAssetFields = Object.keys(item).filter((field) => !VIDEO_ASSET_FIELDS.has(field));
+    if (unknownAssetFields.length) {
+      return { error: `Unsupported assets[${index}] fields: ${unknownAssetFields.join(", ")}` };
+    }
+
+    const type = item.type;
+    const url = item.url;
+    const role = item.role;
+    if (type !== "image" && type !== "video" && type !== "audio") {
+      return { error: `assets[${index}].type must be image, video, or audio` };
+    }
+    if (typeof url !== "string" || !isHttpsUrl(url.trim())) {
+      return { error: `assets[${index}].url must be a valid HTTPS URL` };
+    }
+    if (typeof role !== "string" || !VIDEO_ASSET_ROLES[type].has(role as never)) {
+      return { error: `assets[${index}].role is invalid for type ${type}` };
+    }
+
+    assets.push({ type, url: url.trim(), role });
+  }
+
+  const hasFirstFrame = assets.some((asset) => asset.role === "first_frame");
+  const hasLastFrame = assets.some((asset) => asset.role === "last_frame");
+  const modeType = String(
+    request.modeType || (hasFirstFrame && hasLastFrame
+      ? "frames2video"
+      : assets.length > 0 ? "image2video" : "text2video"),
+  ).trim();
+  if (!VIDEO_MODE_TYPES.has(modeType)) {
+    return { error: "modeType must be text2video, image2video, or frames2video" };
+  }
+
+  const referenceMode = String(
+    request.referenceMode || (modeType === "frames2video" ? "first_last_frame" : "multimodal"),
+  ).trim();
+  if (!VIDEO_REFERENCE_MODES.has(referenceMode)) {
+    return { error: "referenceMode must be multimodal or first_last_frame" };
+  }
+
+  const firstFrameCount = assets.filter((asset) => asset.role === "first_frame").length;
+  const lastFrameCount = assets.filter((asset) => asset.role === "last_frame").length;
+  if (modeType === "text2video" && assets.length > 0) {
+    return { error: "text2video does not accept assets" };
+  }
+  if (modeType === "image2video" && assets.length === 0) {
+    return { error: "image2video requires at least one asset" };
+  }
+  if (modeType === "frames2video" && (firstFrameCount !== 1 || lastFrameCount !== 1)) {
+    return { error: "frames2video requires exactly one first_frame and one last_frame" };
+  }
+  if (modeType === "frames2video" && referenceMode !== "first_last_frame") {
+    return { error: "frames2video requires referenceMode=first_last_frame" };
+  }
+  if (modeType !== "frames2video" && (firstFrameCount > 0 || lastFrameCount > 0)) {
+    return { error: "first_frame and last_frame are only valid for frames2video" };
+  }
+  if (modeType !== "frames2video" && referenceMode !== "multimodal") {
+    return { error: `${modeType} requires referenceMode=multimodal` };
+  }
+
+  return {
+    value: {
+      model: request.model.trim(),
+      prompt: request.prompt.trim(),
+      assets,
+      params: {
+        ratio: typeof request.aspectRatio === "string" ? request.aspectRatio.trim() : undefined,
+        resolution: typeof request.resolution === "string" ? request.resolution.trim() : undefined,
+        duration: typeof request.duration === "string" ? request.duration.trim() : undefined,
+        modeType,
+        referenceMode,
+        has_video: assets.some((asset) => asset.type === "video"),
+        webhookUrl: typeof request.webhookUrl === "string" ? request.webhookUrl.trim() : undefined,
+      },
+    },
   };
+};
 
-  return { assets, params };
+const validateModelCapabilities = (capabilities: any, params: any, assets: Array<{ type: string }>) => {
+  const requiredLists = ["durations", "resolutions", "ratios"] as const;
+  const requiredLimits = ["max_images", "max_videos", "max_audios"] as const;
+  const invalidConfig = requiredLists.find((key) => !Array.isArray(capabilities?.[key]) || capabilities[key].length === 0)
+    || requiredLimits.find((key) => !Number.isSafeInteger(capabilities?.[key]) || capabilities[key] < 0)
+    || (typeof capabilities?.supports_first_last_frame !== "boolean" ? "supports_first_last_frame" : "");
+  if (invalidConfig) {
+    return { status: 500, error: `模型能力配置不完整：${invalidConfig}` };
+  }
+
+  const invalidParam = [
+    ["duration", params.duration, capabilities.durations],
+    ["resolution", params.resolution, capabilities.resolutions],
+    ["aspectRatio", params.ratio, capabilities.ratios],
+  ].find(([, value, allowed]) => value && !allowed.includes(value));
+  if (invalidParam) {
+    const [name, value, allowed] = invalidParam;
+    return { status: 400, error: `参数 ${name}=${value} 不受支持，可选值：${allowed.join(", ")}` };
+  }
+
+  const counts = {
+    image: assets.filter((asset) => asset.type === "image").length,
+    video: assets.filter((asset) => asset.type === "video").length,
+    audio: assets.filter((asset) => asset.type === "audio").length,
+  };
+  const limits = {
+    image: capabilities.max_images,
+    video: capabilities.max_videos,
+    audio: capabilities.max_audios,
+  };
+  const exceededType = (Object.keys(counts) as Array<keyof typeof counts>)
+    .find((type) => counts[type] > limits[type]);
+  if (exceededType) {
+    return {
+      status: 400,
+      error: `当前模型最多支持 ${limits[exceededType]} 个${exceededType}素材，实际提交 ${counts[exceededType]} 个`,
+    };
+  }
+  if (params.modeType === "frames2video" && !capabilities.supports_first_last_frame) {
+    return { status: 400, error: "当前模型不支持首尾帧生成" };
+  }
+
+  return null;
 };
 
 async function handleVideoApi(req: Request, url: URL) {
@@ -401,75 +417,45 @@ async function handleVideoApi(req: Request, url: URL) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  if (req.method === "POST" && (url.pathname === "/v1/video/generations" || url.pathname === "/v1/videos")) {
-    const body = await req.json().catch(() => null);
-    if (!body || typeof body !== "object") {
-      return jsonResponse({ error: "Invalid JSON body" }, 400);
+  if (req.method === "POST" && url.pathname === "/v1/video/generations") {
+    const parsed = parseVideoRequest(await req.json().catch(() => null));
+    if (!parsed.value) return jsonResponse({ error: parsed.error }, 400);
+
+    const { model, prompt, assets, params } = parsed.value;
+
+    // Resolve the documented public model name only.
+    const modelId = await resolvePublicApiModelId(supabaseAdmin, model);
+    if (!modelId) {
+      return jsonResponse({ error: "模型不存在或未开放 API 调用" }, 400);
     }
 
-    const { assets, params } = normalizeVideoRequest(body);
-    if (hasInvalidAssetUrl(assets)) {
-      return jsonResponse({ error: "素材必须是 http/https 公网 URL，请勿直接传 base64、blob 或文件内容。" }, 400);
+    const { data: modelData, error: modelError } = await supabaseAdmin
+      .from("model_costs")
+      .select("config")
+      .eq("model_id", modelId)
+      .single();
+
+    if (modelError || !modelData) {
+      return jsonResponse({ error: "读取模型配置失败" }, 500);
     }
 
-    // 获取模型
-const modelId = await resolvePublicApiModelId(
-  supabaseAdmin,
-  String(body.model || ""),
-);
+    const capabilityError = validateModelCapabilities(modelData.config?.capabilities, params, assets);
+    if (capabilityError) return jsonResponse({ error: capabilityError.error }, capabilityError.status);
 
-if (!modelId) {
-  return jsonResponse({ error: "模型不存在或未开放 API 调用" }, 400);
-}
-
-// 获取模型允许的参数
-const { data: modelData, error: modelError } = await supabaseAdmin
-  .from("model_costs")
-  .select("config")
-  .eq("model_id", modelId)
-  .single();
-
-if (modelError || !modelData) {
-  return jsonResponse({ error: "读取模型配置失败" }, 500);
-}
-
-const capabilities = modelData.config?.capabilities || {};
-
-// 检查用户参数是否在模型允许范围内
-const invalidParam = [
-  ["duration", params.duration, capabilities.durations],
-  ["resolution", params.resolution, capabilities.resolutions],
-  ["ratio", params.ratio, capabilities.ratios],
-].find(([, value, allowed]) =>
-  value &&
-  Array.isArray(allowed) &&
-  !allowed.includes(value)
-);
-
-if (invalidParam) {
-  const [name, value, allowed] = invalidParam;
-
-  return jsonResponse({
-    error: `参数 ${name}=${value} 不受支持，可选值：${allowed.join(", ")}`,
-  }, 400);
-}
-
-// 参数合规后，才扣费并创建任务
-const { data, error } = await supabaseAdmin.rpc("api_create_video_task", {
-  p_api_key: apiKey,
-  p_model_id: modelId,
-  p_prompt: String(body.prompt || ""),
-  p_assets: assets,
-  p_params: params,
-});
+    const { data, error } = await supabaseAdmin.rpc("api_create_video_task", {
+      p_api_key: apiKey,
+      p_model_id: modelId,
+      p_prompt: prompt,
+      p_assets: assets,
+      p_params: params,
+    });
 
     if (error) return jsonResponse({ error: error.message }, statusFromRpcError(error.message));
     return jsonResponse(data, 200);
   }
 
   if (req.method === "GET") {
-    const match = url.pathname.match(/^\/v1\/video\/generations\/([0-9a-f-]{36})$/i)
-      || url.pathname.match(/^\/v1\/videos\/([0-9a-f-]{36})$/i);
+    const match = url.pathname.match(/^\/v1\/video\/generations\/([0-9a-f-]{36})$/i);
     if (!match) return jsonResponse({ error: "Not found" }, 404);
 
     const taskId = match[1];
@@ -636,8 +622,6 @@ Deno.serve(async (req) => {
     if (
       url.pathname === "/v1/video/generations"
       || url.pathname.startsWith("/v1/video/generations/")
-      || url.pathname === "/v1/videos"
-      || url.pathname.startsWith("/v1/videos/")
     ) {
       return await handleVideoApi(req, url);
     }
