@@ -222,12 +222,14 @@ const VIDEO_REQUEST_FIELDS = new Set([
   "model",
   "prompt",
   "aspectRatio",
+  "aspect_ratio",
   "resolution",
   "duration",
   "modeType",
   "referenceMode",
   "assets",
   "webhookUrl",
+  "webhook_url",
 ]);
 const VIDEO_ASSET_FIELDS = new Set(["type", "url", "role"]);
 const VIDEO_MODE_TYPES = new Set(["text2video", "image2video", "frames2video"]);
@@ -264,13 +266,27 @@ const parseVideoRequest = (body: unknown) => {
     return { error: "prompt must be a non-empty string" };
   }
 
-  for (const field of ["aspectRatio", "resolution", "duration", "modeType", "referenceMode", "webhookUrl"] as const) {
-    const value = request[field];
+  const aspectRatio = request.aspectRatio !== undefined
+    ? request.aspectRatio
+    : request.aspect_ratio;
+  const webhookUrl = request.webhookUrl !== undefined
+    ? request.webhookUrl
+    : request.webhook_url;
+
+  for (const [field, value] of [
+    ["aspectRatio", aspectRatio],
+    ["resolution", request.resolution],
+    ["duration", request.duration],
+    ["modeType", request.modeType],
+    ["referenceMode", request.referenceMode],
+    ["webhookUrl", webhookUrl],
+  ] as const) {
     if (value !== undefined && (typeof value !== "string" || !value.trim())) {
       return { error: `${field} must be a non-empty string` };
     }
   }
-  if (typeof request.webhookUrl === "string" && !isHttpsUrl(request.webhookUrl.trim())) {
+
+  if (typeof webhookUrl === "string" && !isHttpsUrl(webhookUrl.trim())) {
     return { error: "webhookUrl must be a valid HTTPS URL" };
   }
 
@@ -351,13 +367,13 @@ const parseVideoRequest = (body: unknown) => {
       prompt: request.prompt.trim(),
       assets,
       params: {
-        ratio: typeof request.aspectRatio === "string" ? request.aspectRatio.trim() : undefined,
+        ratio: typeof aspectRatio === "string" ? aspectRatio.trim() : undefined,
         resolution: typeof request.resolution === "string" ? request.resolution.trim() : undefined,
         duration: typeof request.duration === "string" ? request.duration.trim() : undefined,
         modeType,
         referenceMode,
         has_video: assets.some((asset) => asset.type === "video"),
-        webhookUrl: typeof request.webhookUrl === "string" ? request.webhookUrl.trim() : undefined,
+        webhookUrl: typeof webhookUrl === "string" ? webhookUrl.trim() : undefined,
       },
     },
   };
@@ -377,7 +393,13 @@ const validateModelCapabilities = (capabilities: any, params: any, assets: Array
     ["duration", params.duration, capabilities.durations],
     ["resolution", params.resolution, capabilities.resolutions],
     ["aspectRatio", params.ratio, capabilities.ratios],
-  ].find(([, value, allowed]) => value && !allowed.includes(value));
+  ].find(([name, value, allowed]) =>
+    value && !allowed.some((item: unknown) =>
+      name === "duration"
+        ? String(item).replace(/s$/i, "") === String(value).replace(/s$/i, "")
+        : item === value
+    )
+  );
   if (invalidParam) {
     const [name, value, allowed] = invalidParam;
     return { status: 400, error: `参数 ${name}=${value} 不受支持，可选值：${allowed.join(", ")}` };
