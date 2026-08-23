@@ -127,7 +127,7 @@ const readBearerToken = (req: Request) => {
 const UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const UPLOAD_SIGN_FIELDS = new Set(["contentType", "size"]);
 const UPLOAD_WORKER_URL = Deno.env.get("UPLOAD_WORKER_URL") || "https://sedance.top";
-const UPLOAD_PUBLIC_URL = Deno.env.get("UPLOAD_PUBLIC_URL") || "https://fast.sedance.top";
+const UPLOAD_PUBLIC_URL = Deno.env.get("UPLOAD_PUBLIC_URL") || "https://max.sedance.top";
 
 const uploadExtByType: Record<string, string> = {
   "image/jpeg": "jpg",
