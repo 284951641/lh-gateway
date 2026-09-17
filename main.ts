@@ -1,6 +1,22 @@
 // main.ts
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+const SEXUAL_HARD_REJECT = [
+  /色情|淫秽|成人视频|黄片|AV片|裸聊/i,
+  /性交|做爱|性爱|性爱场景|性行为|口交|肛交|自慰|手淫|射精/i,
+];
+
+const FEMALE_EXPLICIT_REJECT = [
+  /她.{0,12}(?:全身裸体|完全赤裸|全身赤裸|乳房|脱掉.{0,8}内衣)/i,
+  /(?:全身裸体|完全赤裸|全身赤裸|乳房|脱掉.{0,8}内衣).{0,12}她/i,
+];
+
+const isBlockedPrompt = (prompt: string) => {
+  const normalized = String(prompt || "").replace(/\s+/g, " ").trim();
+  return [...SEXUAL_HARD_REJECT, ...FEMALE_EXPLICIT_REJECT]
+    .some((rule) => rule.test(normalized));
+};
+
 const secretsCache = new Map<string, { base_url: string; api_key: string }>();
 
 const corsHeaders = {
@@ -463,7 +479,12 @@ async function handleVideoApi(req: Request, url: URL) {
 
     const capabilityError = validateModelCapabilities(modelData.config?.capabilities, params, assets);
     if (capabilityError) return jsonResponse({ error: capabilityError.error }, capabilityError.status);
-
+    if (isBlockedPrompt(prompt)) {
+  return jsonResponse({
+    error: "内容审核未通过，请调整提示词或素材后重试",
+    code: "content_policy_violation",
+  }, 400);
+}
     const { data, error } = await supabaseAdmin.rpc("api_create_video_task", {
       p_api_key: apiKey,
       p_model_id: modelId,
