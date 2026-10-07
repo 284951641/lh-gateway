@@ -56,6 +56,14 @@ const isPublicApiVideoModel = (model: ApiVideoModel) => getApiAccessConfig(model
 const getPublicApiModelName = (model: ApiVideoModel) =>
   String(getApiAccessConfig(model).display_name || model.name || model.model_id);
 
+const LEGACY_MODEL_ALIASES = new Map<string, string>([
+  ["sd2.5-1080-pro-A", "SD-2.5-1080"],
+  ["sd2.5-720-pro-A", "SD-2.5-720-pro"],
+  ["sd-720-pro", "SD-2.0-720-pro"],
+  ["sd-720-fast", "SD-2.0-720-fast"],
+  ["sd-1080-pro", "SD-2.0-1080"],
+]);
+
 const getPublicApiModelDescription = (model: ApiVideoModel) =>
   String(getApiAccessConfig(model).description || "");
 
@@ -106,8 +114,12 @@ async function resolvePublicApiModelId(supabaseAdmin: any, requestedModel: strin
   const modelName = String(requestedModel || "").trim();
   if (!modelName) return "";
 
+  const resolvedModelName = LEGACY_MODEL_ALIASES.get(modelName) ?? modelName;
   const models = await fetchPublicApiVideoModels(supabaseAdmin);
-  const matched = models.find((model) => getPublicApiModelName(model) === modelName);
+  const matched = models.find(
+    (model) => getPublicApiModelName(model) === resolvedModelName,
+  );
+
   return matched?.model_id || "";
 }
 
