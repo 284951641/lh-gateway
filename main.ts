@@ -529,7 +529,6 @@ async function handleVideoApi(req: Request, url: URL) {
 }
 
 async function handleProxyGateway(req: Request) {
-  const authHeader = req.headers.get("Authorization");
   const provider = req.headers.get("x-provider");
   const targetPath = req.headers.get("x-path") || "/v1/chat/completions";
 
@@ -538,16 +537,19 @@ async function handleProxyGateway(req: Request) {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceKey } = supabaseConfig();
 
   const supabaseClient = createClient(supabaseUrl, supabaseAnonKey);
-  const token = authHeader?.replace("Bearer ", "");
+  const token = readBearerToken(req);
   const { data: { user }, error: authError } = await supabaseClient.auth.getUser(token);
 
   if (authError || !user) {
     return jsonResponse({ error: "Unauthorized access" }, 401);
   }
 
+  const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
   let secret = secretsCache.get(provider);
   if (!secret) {
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
     const { data, error } = await supabaseAdmin
       .from("api_secrets")
       .select("base_url, api_key")
@@ -559,8 +561,41 @@ async function handleProxyGateway(req: Request) {
     secretsCache.set(provider, data);
   }
 
+  let rewrittenPath = targetPath;
+  let proxyBody: BodyInit | null = req.body;
+  const jsonBody = req.method !== "GET" && req.method !== "HEAD" &&
+      (req.headers.get("content-type") || "").includes("application/json")
+    ? await req.clone().json().catch(() => null)
+    : null;
+  const geminiPathModel = rewrittenPath.match(/\/models\/([^/:?]+):/i)?.[1] || "";
+  const runningHubMatch = rewrittenPath.match(/\/openapi\/v\d+\/([^/?]+)/i)?.[1] || "";
+  const runningHubPathModel = ["media", "run", "query"].includes(runningHubMatch) ? "" : runningHubMatch;
+  const pathModel = geminiPathModel || runningHubPathModel;
+  const publicModel = String(jsonBody?.model || pathModel || "").trim();
+
+  if (publicModel) {
+    const { data, error } = await supabaseAdmin
+      .from("model_costs")
+      .select("model_id")
+      .eq("public_id", publicModel)
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (error) throw new Error("读取模型映射失败");
+    const realModel = data?.model_id;
+    if (realModel) {
+      if (jsonBody && typeof jsonBody.model === "string") {
+        jsonBody.model = realModel;
+        proxyBody = JSON.stringify(jsonBody);
+      }
+      if (pathModel === publicModel) {
+        rewrittenPath = rewrittenPath.replace(pathModel, encodeURIComponent(realModel));
+      }
+    }
+  }
+
   const baseUrl = secret.base_url.replace(/\/$/, "");
-  const path = targetPath.replace(/^\/+/, "");
+  const path = rewrittenPath.replace(/^\/+/, "");
   const cleanBase = (path.startsWith("v2") && baseUrl.endsWith("/v1")) ? baseUrl.slice(0, -3) : baseUrl;
   let finalUrl = `${cleanBase}/${path}`;
 
@@ -582,7 +617,7 @@ async function handleProxyGateway(req: Request) {
     method: req.method,
     headers: proxyHeaders,
     redirect: "follow",
-    body: req.body,
+    body: proxyBody,
   };
   const aiFetchPromise = fetch(finalUrl, fetchOptions);
 
