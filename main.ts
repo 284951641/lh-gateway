@@ -562,11 +562,11 @@ async function handleProxyGateway(req: Request) {
   }
 
   let rewrittenPath = targetPath;
-  let proxyBody: BodyInit | null = req.body;
   const jsonBody = req.method !== "GET" && req.method !== "HEAD" &&
       (req.headers.get("content-type") || "").includes("application/json")
     ? await req.clone().json().catch(() => null)
     : null;
+  let proxyBody: BodyInit | null = req.body;
   const geminiPathModel = rewrittenPath.match(/\/models\/([^/:?]+):/i)?.[1] || "";
   const runningHubMatch = rewrittenPath.match(/\/openapi\/v\d+\/([^/?]+)/i)?.[1] || "";
   const runningHubPathModel = ["media", "run", "query"].includes(runningHubMatch) ? "" : runningHubMatch;
